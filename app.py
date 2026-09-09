@@ -46,10 +46,7 @@ def load_credentials_from_mega():
             except Exception:
                 pass
 
-    if not mega_email or not mega_pass:
-        return False
-
-    if not MEGA_AVAILABLE:
+    if not mega_email or not mega_pass or not MEGA_AVAILABLE:
         return False
 
     try:
@@ -521,7 +518,7 @@ BASE_STYLE = """
     }
 </style>
 <div class="app-brand-bar">
-    <span>⚓ Σταθμοί Λάρνακας version 4.1 (Mega Sync Active)</span>
+    <span>⚓ Σταθμοί Λάρνακας version 5 (Mega Sync Active)</span>
     {% if session.get('user_phone') %}
         <a href="/user_settings" class="settings-gear">⚙️ Ρυθμίσεις Χρήστη</a>
     {% endif %}
@@ -1489,12 +1486,25 @@ def admin():
                     else:
                         m_email = request.form.get('mega_email')
                         m_pass = request.form.get('mega_pass')
+                        
+                        # 1. Αποθήκευση στη βάση δεδομένων
                         cursor.execute("UPDATE settings SET value = ? WHERE key = 'mega_email'", (m_email,))
                         if m_pass:
                             cursor.execute("UPDATE settings SET value = ? WHERE key = 'mega_pass'", (m_pass,))
                         conn.commit()
+                        
+                        # 2. Μόνιμη αποθήκευση στο τοπικό αρχείο εκκίνησης (mega_credentials.txt)
+                        try:
+                            with open(MEGA_CRED_FILE, 'w', encoding='utf-8') as f:
+                                cursor.execute("SELECT value FROM settings WHERE key = 'mega_pass'")
+                                current_pass_row = cursor.fetchone()
+                                actual_pass = m_pass if m_pass else (current_pass_row['value'] if current_pass_row else '')
+                                f.write(f"{m_email}\n{actual_pass}")
+                        except Exception:
+                            pass
+
                         sync_database_to_mega()
-                        msg = "Οι ρυθμίσεις Mega.nz αποθηκεύτηκαν."
+                        msg = "Οι ρυθμίσεις Mega.nz αποθηκεύτηκαν μόνιμα και στο αρχείο εκκίνησης."
                 elif action == 'change_password':
                     if not is_super_admin:
                         msg = "Μόνο ο Super Admin μπορεί να αλλάξει τον κεντρικό κωδικό διαχειριστή."
@@ -1533,7 +1543,7 @@ def admin():
             <h3>☁️ Ρυθμίσεις Mega.nz (Cloud Storage 20 GB)</h3>
             Mega Email: <input type="text" name="mega_email" value="{{ mega_cfg.get('mega_email', '') }}"><br>
             Mega Password: <input type="password" name="mega_pass" placeholder="Αφήστε κενό για διατήρηση"><br>
-            <button type="submit" name="action" value="save_mega" class="btn-success">Αποθήκευση Mega</button>
+            <button type="submit" name="action" value="save_mega" class="btn-success">Αποθήκευση Mega & Μόνιμο Κλείδωμα</button>
 
             <hr>
             <h3>🔑 Ενεργοποίηση Roster Βάρδιας</h3>
