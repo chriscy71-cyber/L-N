@@ -26,8 +26,89 @@ app.secret_key = os.environ.get('SECRET_KEY', 'lkn_ast_larnakas_secure_key_2026'
 UPLOAD_FOLDER = 'uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-DB_NAME = 'lkn_secure_mobile.db'
+DB_NAME = 'database.db'
+MEGA_CRED_FILE = 'mega_credentials.txt'
 DEFAULT_ADMIN_PASSWORD = 'LKN_ADMIN_2026'
+
+
+def load_credentials_from_mega():
+    """Πάγια εντολή εκκίνησης: Ελέγχει και κατεβάζει τη βάση από το Mega πριν εκκινηθεί ο Flask server."""
+    mega_email = os.environ.get('MEGA_EMAIL')
+    mega_pass = os.environ.get('MEGA_PASSWORD')
+
+    if not mega_email or not mega_pass:
+        if os.path.exists(MEGA_CRED_FILE):
+            try:
+                with open(MEGA_CRED_FILE, 'r', encoding='utf-8') as f:
+                    lines = f.read().splitlines()
+                    if len(lines) >= 2:
+                        mega_email, mega_pass = lines[0].strip(), lines[1].strip()
+            except Exception:
+                pass
+
+    if not mega_email or not mega_pass:
+        return False
+
+    if not MEGA_AVAILABLE:
+        return False
+
+    try:
+        m = Mega()
+        m = m.login(mega_email, mega_pass)
+        file_list = m.get_files()
+        db_file_id = None
+        for file_id, file_info in file_list.items():
+            if isinstance(file_info, dict) and file_info.get('name') == DB_NAME:
+                db_file_id = file_id
+                break
+
+        if db_file_id:
+            m.download(db_file_id)
+            logging.info("[MEGA] Η βάση δεδομένων κατεβάστηκε επιτυχώς από το Mega.")
+            return True
+    except Exception as e:
+        logging.error(f"[MEGA STARTUP ERROR] {e}")
+    return False
+
+
+def sync_database_to_mega():
+    """Συγχρονίζει και ανεβάζει τη βάση δεδομένων στο Mega μετά από σημαντικές αλλαγές."""
+    mega_email = os.environ.get('MEGA_EMAIL')
+    mega_pass = os.environ.get('MEGA_PASSWORD')
+
+    if not mega_email or not mega_pass:
+        if os.path.exists(MEGA_CRED_FILE):
+            try:
+                with open(MEGA_CRED_FILE, 'r', encoding='utf-8') as f:
+                    lines = f.read().splitlines()
+                    if len(lines) >= 2:
+                        mega_email, mega_pass = lines[0].strip(), lines[1].strip()
+            except Exception:
+                pass
+
+    if not mega_email or not mega_pass or not MEGA_AVAILABLE:
+        return
+
+    try:
+        m = Mega()
+        m = m.login(mega_email, mega_pass)
+        file_list = m.get_files()
+        for file_id, file_info in file_list.items():
+            if isinstance(file_info, dict) and file_info.get('name') == DB_NAME:
+                try:
+                    m.delete(file_id)
+                except Exception:
+                    pass
+                break
+        m.upload(DB_NAME)
+        logging.info("[MEGA] Η βάση δεδομένων συγχρονίστηκε και ανέβηκε στο Mega.")
+    except Exception as e:
+        logging.error(f"[MEGA SYNC ERROR] {e}")
+
+
+# Πάγια εκτέλεση πριν σηκωθεί η εφαρμογή
+load_credentials_from_mega()
+
 
 def get_db_connection():
     conn = sqlite3.connect(DB_NAME, timeout=30.0)
@@ -192,6 +273,7 @@ def clean_old_channel_entries():
         for ch in target_channels:
             cursor.execute("DELETE FROM logbook_entries WHERE channel_name = ? AND timestamp < ?", (ch, two_months_ago))
         conn.commit()
+    sync_database_to_mega()
 
 def upload_to_mega(file_path, original_filename):
     with get_db_connection() as conn:
@@ -238,7 +320,6 @@ def get_super_admin_id():
         row = cursor.fetchone()
         if row:
             return row['id']
-        # Fallback αν δεν υπάρχει κανείς με level 1
         cursor.execute("""
             SELECT id FROM users 
             WHERE role = 'Admin' AND status = 'Approved' 
@@ -262,6 +343,7 @@ def handle_admin_departure(departed_user_id):
             if next_admin:
                 cursor.execute("UPDATE users SET admin_level = 1, custom_permissions = '' WHERE id = ?", (next_admin['id'],))
                 conn.commit()
+    sync_database_to_mega()
 
 def check_admin_permission(user_id, required_permission):
     with get_db_connection() as conn:
@@ -439,7 +521,7 @@ BASE_STYLE = """
     }
 </style>
 <div class="app-brand-bar">
-    <span>⚓ Σταθμοί Λάρνακας version 4.1 (Super Admin Double Protection)</span>
+    <span>⚓ Σταθμοί Λάρνακας version 4.1 (Mega Sync Active)</span>
     {% if session.get('user_phone') %}
         <a href="/user_settings" class="settings-gear">⚙️ Ρυθμίσεις Χρήστη</a>
     {% endif %}
@@ -586,6 +668,7 @@ def set_password():
                 cursor = conn.cursor()
                 cursor.execute("UPDATE users SET password = ?, email = ? WHERE phone = ?", (hashed_pass, email, session['user_phone']))
                 conn.commit()
+            sync_database_to_mega()
             return redirect(url_for('index'))
         else:
             msg = "Οι κωδικοί δεν ταιριάζουν ή είναι κενοί."
@@ -644,11 +727,13 @@ def user_settings():
                         hashed_p = generate_password_hash(new_pass)
                         cursor.execute("UPDATE users SET email = ?, password = ? WHERE id = ?", (new_email, hashed_p, user_id))
                         conn.commit()
+                        sync_database_to_mega()
                         msg = "Το προφίλ και ο κωδικός ενημερώθηκαν επιτυχώς."
                         current_email = new_email
                 else:
                     cursor.execute("UPDATE users SET email = ? WHERE id = ?", (new_email, user_id))
                     conn.commit()
+                    sync_database_to_mega()
                     msg = "Το email ενημερώθηκε επιτυχώς."
                     current_email = new_email
 
@@ -671,6 +756,7 @@ def user_settings():
                         ON CONFLICT(user_id, channel_id) DO UPDATE SET enabled = ?
                     """, (user_id, ch_id, is_enabled, is_enabled))
                 conn.commit()
+                sync_database_to_mega()
                 msg = "Οι ρυθμίσεις ειδοποιήσεων καναλιών αποθηκεύτηκαν."
 
         cursor.execute("""
@@ -747,6 +833,7 @@ def register():
                     cursor.execute("INSERT INTO users (phone, name, station, status, role, password, email, admin_level) VALUES (?, ?, ?, 'Pending', 'User', NULL, ?, 0)",
                                    (phone, name, station, email))
                 conn.commit()
+            sync_database_to_mega()
             session['user_phone'] = phone
             return redirect(url_for('set_password'))
         except sqlite3.IntegrityError:
@@ -799,6 +886,7 @@ def library():
                 cursor.execute("INSERT INTO library (title, category, filename, mega_link, uploader, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
                                (title, category, unique_filename, mega_link, author_name, timestamp))
                 conn.commit()
+            sync_database_to_mega()
         
         cursor.execute("SELECT id, title, category, filename, mega_link, uploader, timestamp FROM library ORDER BY id DESC")
         items = cursor.fetchall()
@@ -871,6 +959,7 @@ def delete_library_item():
         item_id = request.form.get('item_id')
         cursor.execute("DELETE FROM library WHERE id = ?", (item_id,))
         conn.commit()
+    sync_database_to_mega()
     return redirect(url_for('library'))
 
 @app.route('/roster', methods=['GET', 'POST'])
@@ -911,6 +1000,7 @@ def roster():
                             ON CONFLICT(user_id, year_month, day) DO UPDATE SET symbol = ?
                         """, (user_id, ym, day, sym, sym))
                 conn.commit()
+                sync_database_to_mega()
                 return redirect(url_for('roster', ym=ym))
             
             elif action == 'send_excel_email' and role == 'Admin':
@@ -1106,6 +1196,7 @@ def logbook(channel_name):
             cursor.execute("INSERT INTO logbook_entries (channel_name, author_name, content, filename, mega_link, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
                            (channel_name, author_name, content, filename, mega_link, timestamp))
             conn.commit()
+            sync_database_to_mega()
             
         cursor.execute("SELECT id, author_name, content, filename, mega_link, timestamp FROM logbook_entries WHERE channel_name = ? ORDER BY id DESC", (channel_name,))
         entries = cursor.fetchall()
@@ -1197,6 +1288,7 @@ def delete_logbook_message():
         channel_name = request.form.get('channel_name')
         cursor.execute("DELETE FROM logbook_entries WHERE id = ?", (entry_id,))
         conn.commit()
+    sync_database_to_mega()
     return redirect(url_for('logbook', channel_name=channel_name))
 
 @app.route('/vessel_log/<vessel_name>', methods=['GET', 'POST'])
@@ -1244,6 +1336,7 @@ def vessel_log(vessel_name):
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, (vessel_name, entry_date, incident, damage, working_hours, repair_report, author_name, timestamp))
             conn.commit()
+            sync_database_to_mega()
             
         cursor.execute("SELECT id, entry_date, incident, damage, working_hours, repair_report, author, timestamp FROM vessel_logs WHERE vessel_name = ? ORDER BY id DESC", (vessel_name,))
         entries = cursor.fetchall()
@@ -1305,6 +1398,7 @@ def delete_vessel_message():
         vessel_name = request.form.get('vessel_name')
         cursor.execute("DELETE FROM vessel_logs WHERE id = ?", (entry_id,))
         conn.commit()
+    sync_database_to_mega()
     return redirect(url_for('vessel_log', vessel_name=vessel_name))
 
 @app.route('/uploads/<filename>')
@@ -1347,13 +1441,13 @@ def admin():
                         uid = request.form.get('user_id')
                         cursor.execute("UPDATE users SET status = 'Approved' WHERE id = ?", (uid,))
                         conn.commit()
+                        sync_database_to_mega()
                         msg = "Ο χρήστης εγκρίθηκε επιτυχώς."
                 elif action == 'revoke':
                     if not check_admin_permission(current_admin_id, 'manage_users'):
                         msg = "Δεν έχετε εξουσιοδότηση για διαχείριση χρηστών."
                     else:
                         uid = request.form.get('user_id')
-                        # Έλεγχος αποτροπής διαγραφής του τελευταίου Super Admin
                         cursor.execute("SELECT admin_level FROM users WHERE id = ?", (uid,))
                         target_u = cursor.fetchone()
                         if target_u and target_u['admin_level'] == 1:
@@ -1362,6 +1456,7 @@ def admin():
                             handle_admin_departure(uid)
                             cursor.execute("UPDATE users SET status = 'Pending', role = 'User', admin_level = 0, custom_permissions = '' WHERE id = ?", (uid,))
                             conn.commit()
+                            sync_database_to_mega()
                             msg = "Η έγκριση και τα δικαιώματα αφαιρέθηκαν."
                 elif action == 'set_admin_role':
                     if is_super_admin:
@@ -1370,12 +1465,12 @@ def admin():
                         perms = request.form.getlist('custom_perms')
                         perms_str = ",".join(perms) if lvl == 4 else ""
                         
-                        # Αν ορίζεται νέος Super Admin (Level 1), εξασφαλίζουμε ότι ο προηγούμενος γίνεται Level 2 (για να υπάρχει μοναδικότητα)
                         if lvl == 1:
                             cursor.execute("UPDATE users SET admin_level = 2 WHERE admin_level = 1")
                             
                         cursor.execute("UPDATE users SET role = 'Admin', admin_level = ?, custom_permissions = ? WHERE id = ?", (lvl, perms_str, uid))
                         conn.commit()
+                        sync_database_to_mega()
                         msg = "Ο ρόλος διαχειριστή ενημερώθηκε επιτυχώς με διπλή επικύρωση."
                     else:
                         msg = "Μόνο ο Super Admin μπορεί να ορίσει ρόλους διαχειριστών."
@@ -1386,6 +1481,7 @@ def admin():
                         new_state = '1' if not is_roster_active() else '0'
                         cursor.execute("UPDATE settings SET value = ? WHERE key = 'roster_enabled'", (new_state,))
                         conn.commit()
+                        sync_database_to_mega()
                         msg = "Η κατάσταση του Roster ενημερώθηκε."
                 elif action == 'save_mega':
                     if not is_super_admin:
@@ -1397,6 +1493,7 @@ def admin():
                         if m_pass:
                             cursor.execute("UPDATE settings SET value = ? WHERE key = 'mega_pass'", (m_pass,))
                         conn.commit()
+                        sync_database_to_mega()
                         msg = "Οι ρυθμίσεις Mega.nz αποθηκεύτηκαν."
                 elif action == 'change_password':
                     if not is_super_admin:
@@ -1407,6 +1504,7 @@ def admin():
                             hashed_admin_pass = generate_password_hash(new_pass)
                             cursor.execute("UPDATE settings SET value = ? WHERE key = 'admin_password'", (hashed_admin_pass,))
                             conn.commit()
+                            sync_database_to_mega()
                             msg = "Ο κωδικός διαχείρισης άλλαξε επιτυχώς."
             else:
                 msg = "Λάθος κωδικός διαχειριστικής πρόσβασης."
@@ -1446,7 +1544,6 @@ def admin():
         {% if is_super_admin %}
         <hr>
         <h3>👑 Ορισμός Ιεραρχίας Διαχειριστών (1 Super Admin, 5 Κανονικοί, 3 Περιορισμένοι)</h3>
-        <!-- Προσθήκη JavaScript διπλής επιβεβαίωσης αν επιλεγεί Super Admin -->
         <form method="POST" id="adminRoleForm" style="background:#eff6ff; padding:15px; border:1px solid #bfdbfe; border-radius:5px;" onsubmit="return handleSuperAdminTransfer(this);">
             <input type="hidden" name="action" value="set_admin_role">
             <label><b>Επιλογή Εγκεκριμένου Χρήστη:</b></label><br>
