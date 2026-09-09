@@ -2,4 +2,4 @@ Flask==3.1.0
 Werkzeug
 openpyxl==3.1.5
 mega.py
-tenacity==8.5.0
+tenacity==8.2.3
