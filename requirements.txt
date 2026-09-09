@@ -1,6 +1,0 @@
-Flask==3.1.0
-Werkzeug
-openpyxl==3.1.5
-pycryptodome==3.20.0
-mega.py==1.0.8
-tenacity==8.2.3
