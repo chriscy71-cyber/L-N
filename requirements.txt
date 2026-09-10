@@ -1,0 +1,5 @@
+Flask
+supabase
+openpyxl
+requests
+gunicorn
